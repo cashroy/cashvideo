@@ -4,10 +4,10 @@ CashVideo is a private, self-hosted home cinema for a household. Each person get
 
 ## Features
 
-- First-run admin setup, household user management, secure password hashing, and 30-day sessions
+- First-run admin setup, household user management, securely hashed 4-digit PINs, login throttling, and 30-day sessions
 - Per-user profiles, watchlists, history, progress, recommendations, and account deletion
 - Trending, popular, search, artwork, and recommendations from TMDB using one admin-managed key
-- Native MP4, WebM, and HLS playback for media you own or are authorised to stream
+- Built-in Jellyfin playback matched by TMDB ID, plus custom embed templates and direct media overrides
 - Responsive TV-friendly interface with no advertising or third-party player popups
 - SQLite storage in one easy-to-back-up data directory
 - Docker and Docker Compose deployment for TrueNAS SCALE
@@ -49,8 +49,8 @@ The simplest installation uses a TrueNAS Custom App with Docker Compose.
 
 3. In **Apps > Discover Apps**, choose **Install via YAML** (called **Custom App** on some SCALE releases).
 4. Paste the contents of `docker-compose.yml`, or run `docker compose up -d --build` from the `app` directory if Docker Compose is available in your SCALE release.
-5. Open `http://TRUENAS-IP:3000`. The first person to register becomes the administrator.
-6. In CashVideo, open **Admin** and add your TMDB key and household accounts.
+5. Open `http://TRUENAS-IP:3000`. CashVideo shows its first-run setup; the account created there becomes the administrator and chooses a 4-digit PIN.
+6. In CashVideo, open **Admin** and add your TMDB key, Jellyfin connection, and household accounts.
 
 The included Compose file stores the database in `./data`. For a Custom App created through the TrueNAS UI, replace `./data:/data` with the absolute dataset path `/mnt/tank/apps/cashvideo/data:/data` if its working directory differs from the clone.
 
@@ -62,13 +62,41 @@ The included Compose file stores the database in `./data`. For a Custom App crea
 
 One key is stored server-side in SQLite and used for every CashVideo profile. It is never returned to browsers.
 
-### Add playable media
+### Connect Jellyfin (default playback)
 
-CashVideo accepts a direct HTTP(S) URL to an MP4, WebM, or HLS (`.m3u8`) stream:
+CashVideo uses Jellyfin as its default timestamp-aware provider. Jellyfin remains responsible for serving or transcoding media you own, while CashVideo keeps separate resume progress for every CashVideo profile.
 
-1. Find the title on TMDB and copy the numeric ID from its URL.
-2. In **Admin > Link playable media**, enter the ID, title type, display title, and direct URL.
-3. Make sure the media server permits browser playback from the CashVideo origin (CORS) and supports byte-range requests for seeking.
+1. Install Jellyfin from the TrueNAS app catalogue and add your movie and TV datasets.
+2. Include TMDB IDs in filenames where possible, such as `Movie (2024) [tmdbid-12345]`. Jellyfin also identifies most normally named media automatically.
+3. In Jellyfin, open **Dashboard > Advanced > API Keys**, create a key for CashVideo, and copy it.
+4. In **CashVideo > Admin > Playback system**, leave **Jellyfin (recommended)** selected, enter the server URL and API key, then save.
+
+When both apps share a container network, the URL is commonly `http://jellyfin:8096`. Otherwise use the Jellyfin LAN address, such as `http://TRUENAS-IP:8096`. The API key stays on the CashVideo server and is never returned to browsers. Jellyfin playlists and media are proxied through authenticated CashVideo routes so per-user resume remains isolated.
+
+CashVideo searches Jellyfin by the TMDB ID supplied by its catalogue. For shows it then resolves the selected season and episode. Native playback reports the current timestamp to CashVideo every five seconds, as well as on pause, completion, and player exit. Resume seeks to that timestamp the next time the same profile opens the title.
+
+To start a title at an explicit position, add seconds to the CashVideo page URL, for example `?t=95`. This URL value takes priority over saved progress for that player session; invalid or negative values are ignored.
+
+### Custom playback templates
+
+Select **Custom embed templates** in **Admin > Playback system** to use an authorised iframe player instead. Save one movie URL template and one TV URL template; CashVideo applies them automatically to every catalogue title. For example:
+
+```text
+Movie: https://media.home/movie/{id}
+TV:    https://media.home/{show}/{season}/{episode}
+```
+
+`{id}` and `{show}` are replaced with the TMDB ID. `{season}` and `{episode}` use the episode selected in the player. `{title}` and `{type}` are also available. Templates must be HTTP(S) URLs and contain `{id}`, `{show}`, or `{title}`.
+
+Embedded players are sandboxed to prevent popups and top-level navigation. The configured service must allow iframe embedding. Existing direct MP4, WebM, or HLS title overrides remain supported by the server and take precedence over a template.
+
+Native MP4, WebM, and HLS sources resume at the user's saved timestamp. TV embeds resume at the saved season and episode. A custom iframe player can opt into exact timestamp resume with this origin-checked `postMessage` contract:
+
+- Player to CashVideo: `{ type: "cashvideo:progress", currentTime, duration }`
+- Player to CashVideo when finished: `{ type: "cashvideo:ended" }`
+- CashVideo to player after load: `{ type: "cashvideo:resume", currentTime }`
+
+CashVideo also recognises `vidcore:ended` as a completion event, but providers that do not publish timestamp and seek events cannot support reliable per-user timestamp resume. While a player is open, the browser Back button, Escape key, backdrop, and in-player back button all return to the previous CashVideo screen.
 
 For a fully local setup, serve a read-only media dataset with a media server or reverse proxy and link its URLs. Do not expose the underlying dataset with write access.
 

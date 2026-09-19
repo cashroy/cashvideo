@@ -55,6 +55,10 @@ db.exec(`
   );
 `);
 
+const progressColumns = new Set(db.prepare('PRAGMA table_info(progress)').all().map((column) => column.name));
+if (!progressColumns.has('season')) db.exec('ALTER TABLE progress ADD COLUMN season INTEGER');
+if (!progressColumns.has('episode')) db.exec('ALTER TABLE progress ADD COLUMN episode INTEGER');
+
 export function cleanExpiredSessions() {
   db.prepare('DELETE FROM sessions WHERE expires_at <= CURRENT_TIMESTAMP').run();
 }

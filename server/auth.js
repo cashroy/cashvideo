@@ -4,16 +4,16 @@ import { db } from './db.js';
 
 const scrypt = promisify(crypto.scrypt);
 
-export async function hashPassword(password) {
+export async function hashPin(pin) {
   const salt = crypto.randomBytes(16).toString('hex');
-  const derived = await scrypt(password, salt, 64);
+  const derived = await scrypt(pin, salt, 64);
   return `${salt}:${Buffer.from(derived).toString('hex')}`;
 }
 
-export async function verifyPassword(password, encoded) {
+export async function verifyPin(pin, encoded) {
   const [salt, saved] = encoded.split(':');
   if (!salt || !saved) return false;
-  const derived = await scrypt(password, salt, 64);
+  const derived = await scrypt(pin, salt, 64);
   const savedBuffer = Buffer.from(saved, 'hex');
   return savedBuffer.length === derived.length && crypto.timingSafeEqual(savedBuffer, derived);
 }
