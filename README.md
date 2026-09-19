@@ -88,7 +88,7 @@ TV:    https://website.com/{IMDb_ID}/{SEASON}/{EPISODE}
 
 `{IMDb_ID}` is replaced with the title's IMDb ID. `{SEASON}` and `{EPISODE}` use the episode selected in the player. Lowercase placeholders work too. The existing `{id}`, `{show}`, `{title}`, and `{type}` placeholders remain available. Templates must be HTTP(S) URLs and contain an IMDb, TMDB, show, or title placeholder.
 
-Embedded players are sandboxed to prevent popups and top-level navigation. The configured service must allow iframe embedding. Existing direct MP4, WebM, or HLS title overrides remain supported by the server and take precedence over a template.
+Embedded players run without the iframe `sandbox` attribute for compatibility with providers that require normal browser capabilities. Only configure a source you trust and are authorised to embed. The configured service must allow iframe embedding. Existing direct MP4, WebM, or HLS title overrides remain supported by the server and take precedence over a template.
 
 Native MP4, WebM, and HLS sources resume at the user's saved timestamp. TV embeds resume at the saved season and episode. A custom iframe player can opt into exact timestamp resume with this origin-checked `postMessage` contract:
 
@@ -108,13 +108,31 @@ The supplied Compose file sets `COOKIE_SECURE=false` so sign-in works over HTTP 
 
 Back up the entire `data` dataset. It contains `cashvideo.db` plus SQLite's temporary WAL files. Stop the app or use a TrueNAS snapshot for a consistent backup.
 
-To update:
+### Updating on TrueNAS SCALE
+
+The application code can be rebuilt without deleting the `data` dataset. Your admin account, users, TMDB/Jellyfin settings, watchlists, and progress remain in that dataset, so do not remove or recreate it during an update.
+
+1. In **Datasets**, take a snapshot of `tank/apps/cashvideo` (or at minimum its `data` child dataset).
+2. Open **System > Shell** and update the checkout:
 
 ```bash
 cd /mnt/tank/apps/cashvideo/app
-git pull
+git pull --ff-only
 docker compose up -d --build
 ```
+
+3. Confirm the replacement container is healthy:
+
+```bash
+docker compose ps
+docker compose logs --tail=100 cashvideo
+```
+
+Then open `http://TRUENAS-IP:3000` and sign in normally. `docker compose up -d --build` replaces only the application container; the mounted `data` directory is retained.
+
+If you deployed through **Apps > Installed > CashVideo** rather than running Compose from the shell, first run the same `git pull --ff-only` in the checkout. Then open the app's **Edit** screen and save/redeploy it so TrueNAS rebuilds from the updated checkout. Keep the host-path mount pointing at the existing `/mnt/tank/apps/cashvideo/data` dataset. The exact button names vary between SCALE releases, but use the app's edit/redeploy action rather than uninstalling it.
+
+If the new version does not start, restore the TrueNAS snapshot and redeploy the prior checkout. Do not delete `data/cashvideo.db`, `data/cashvideo.db-wal`, or `data/cashvideo.db-shm` as part of troubleshooting.
 
 ## Environment variables
 
