@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Hls from 'hls.js';
 import { ArrowLeft, Check, Info, Play, Plus, Search } from 'lucide-react';
 import { api } from './api.js';
-import { parseResumeTimestamp, resolvePlaybackTemplate } from './player.js';
+import { addEmbedPlaybackParams, parseResumeTimestamp, resolvePlaybackTemplate } from './player.js';
 
 export function Spinner() { return <div className="spinner" aria-label="Loading" />; }
 
@@ -94,11 +94,12 @@ export function DetailsModal({ item: initial, onClose, onListChange, inList, onS
     if ((item.source_type === 'hls' || item.source_url.includes('.m3u8')) && Hls.isSupported()) { hls = new Hls(); hls.loadSource(item.source_url); hls.attachMedia(video); } else video.src = item.source_url;
     return () => hls?.destroy();
   }, [playing, item.source_type, item.source_url]);
-  const embedUrl = item.source_url ? null : resolvePlaybackTemplate(item.playback_template, item, season, episode);
-  const jellyfinReady = item.playback_provider === 'jellyfin' && item.jellyfin_configured;
-  const playable = Boolean(item.source_url || embedUrl || jellyfinReady);
+  const templateUrl = item.source_url ? null : resolvePlaybackTemplate(item.playback_template, item, season, episode);
   const requestedPosition = parseResumeTimestamp(window.location.search);
   const resumePosition = requestedPosition ?? (Number(item.progress?.position ?? initial.position) || 0);
+  const embedUrl = addEmbedPlaybackParams(templateUrl, resumePosition);
+  const jellyfinReady = item.playback_provider === 'jellyfin' && item.jellyfin_configured;
+  const playable = Boolean(item.source_url || embedUrl || jellyfinReady);
   const requestClose = () => { if (pushedHistoryRef.current) window.history.back(); else onCloseRef.current(); };
   const saveEmbeddedProgress = useCallback((updates = {}) => {
     const position = Number.isFinite(updates.position) ? updates.position : Math.max(1, resumePosition);

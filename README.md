@@ -5,7 +5,7 @@ CashVideo is a private, self-hosted home cinema for a household. Each person get
 ## Features
 
 - First-run admin setup, household user management, securely hashed 4-digit PINs, login throttling, and 30-day sessions
-- Per-user profiles, watchlists, history, progress, recommendations, and account deletion
+- Profile picker on every signed-out visit, per-user PINs, watchlists, history, progress, recommendations, and account deletion
 - Trending, popular, search, artwork, and recommendations from TMDB using one admin-managed key
 - Built-in Jellyfin playback matched by TMDB ID, plus custom embed templates and direct media overrides
 - Responsive TV-friendly interface with no advertising or third-party player popups
@@ -90,7 +90,7 @@ TV:    https://website.com/{IMDb_ID}/{SEASON}/{EPISODE}
 
 Embedded players run without the iframe `sandbox` attribute for compatibility with providers that require normal browser capabilities. Only configure a source you trust and are authorised to embed. The configured service must allow iframe embedding. Existing direct MP4, WebM, or HLS title overrides remain supported by the server and take precedence over a template.
 
-Native MP4, WebM, and HLS sources resume at the user's saved timestamp. TV embeds resume at the saved season and episode. A custom iframe player can opt into exact timestamp resume with this origin-checked `postMessage` contract:
+Native MP4, WebM, and HLS sources resume at the user's saved timestamp. TV embeds resume at the saved season and episode. CashVideo appends `autoPlay=true` and `startAt=<saved seconds>` to every custom embed URL, so compatible providers resume immediately. Add provider-specific choices such as `theme=ff0055`, `hideServer=true`, or `sub=en` to the saved template; CashVideo preserves them. Exact progress tracking still requires the provider to send this origin-checked `postMessage` contract:
 
 - Player to CashVideo: `{ type: "cashvideo:progress", currentTime, duration }`
 - Player to CashVideo when finished: `{ type: "cashvideo:ended" }`

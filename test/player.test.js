@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseResumeTimestamp, resolvePlaybackTemplate } from '../src/player.js';
+import { addEmbedPlaybackParams, parseResumeTimestamp, resolvePlaybackTemplate } from '../src/player.js';
 
 test('resume timestamp accepts finite non-negative seconds', () => {
   assert.equal(parseResumeTimestamp('?t=95'), 95);
@@ -24,4 +24,11 @@ test('playback templates expand IMDb movie and TV placeholders', () => {
 
 test('IMDb templates are unavailable until metadata includes an IMDb ID', () => {
   assert.equal(resolvePlaybackTemplate('https://website.com/embed/movie/{IMDb_ID}', { id: 10, media_type: 'movie' }), null);
+});
+
+test('embed URL carries autoplay and the saved resume point', () => {
+  assert.equal(
+    addEmbedPlaybackParams('https://website.com/embed/movie/tt1234567?theme=ff0055&autoPlay=false&startAt=0', 94.8),
+    'https://website.com/embed/movie/tt1234567?theme=ff0055&autoPlay=true&startAt=94',
+  );
 });

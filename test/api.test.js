@@ -54,6 +54,11 @@ test('first account becomes admin and setup closes', async () => {
   assert.equal(defaults.body.jellyfinConfigured, false);
   const duplicate = await request('/api/auth/setup', { method: 'POST', body: { username: 'other', pin: '5678' } });
   assert.equal(duplicate.status, 409);
+  await request('/api/auth/logout', { method: 'POST' });
+  const picker = await request('/api/bootstrap');
+  assert.deepEqual(picker.body.profiles, [{ id: 1, display_name: 'Owner', avatar: 'violet' }]);
+  const pickedLogin = await request('/api/auth/login', { method: 'POST', body: { profileId: 1, pin: '1234' } });
+  assert.equal(pickedLogin.status, 200);
 });
 
 test('admin creates a user and user data is isolated', async () => {

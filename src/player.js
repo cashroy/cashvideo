@@ -28,3 +28,16 @@ export function resolvePlaybackTemplate(template, item, season = 1, episode = 1)
   });
   return missingValue ? null : resolved;
 }
+
+export function addEmbedPlaybackParams(embedUrl, position = 0) {
+  if (!embedUrl) return null;
+  try {
+    const url = new URL(embedUrl);
+    const startAt = Number.isFinite(position) && position >= 0 ? Math.floor(position) : 0;
+    url.searchParams.set('autoPlay', 'true');
+    url.searchParams.set('startAt', String(startAt));
+    return url.toString();
+  } catch {
+    return embedUrl;
+  }
+}

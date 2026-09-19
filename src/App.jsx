@@ -10,29 +10,39 @@ function PinInput({ value, onChange, ...props }) {
   return <input {...props} type="password" inputMode="numeric" pattern="\d{4}" minLength="4" maxLength="4" autoComplete="off" value={value} onChange={(event) => onChange(event.target.value.replace(/\D/g, '').slice(0, 4))} />;
 }
 
-function AuthScreen({ setup, onAuthenticated }) {
+function AuthScreen({ setup, profiles = [], onAuthenticated }) {
   const [form, setForm] = useState({ displayName: '', username: '', pin: '' });
+  const [selectedProfile, setSelectedProfile] = useState(null);
+  const [manualLogin, setManualLogin] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   async function submit(event) {
     event.preventDefault(); setError(''); setBusy(true);
-    try { await api(setup ? '/api/auth/setup' : '/api/auth/login', { method: 'POST', body: form }); await onAuthenticated(); }
+    const body = selectedProfile ? { profileId: selectedProfile.id, pin: form.pin } : form;
+    try { await api(setup ? '/api/auth/setup' : '/api/auth/login', { method: 'POST', body }); await onAuthenticated(); }
     catch (err) { setError(err.message); } finally { setBusy(false); }
   }
   return <main className="auth-shell">
     <div className="auth-art"><div className="brand"><Clapperboard fill="currentColor" /> Cash<span>Video</span></div><div className="auth-quote"><p>YOUR PRIVATE CINEMA</p><h1>Everything you love.<br />All in one place.</h1><span>Personal profiles, watchlists, recommendations, and your own media — beautifully organised.</span></div></div>
-    <form className="auth-card" onSubmit={submit}>
+    {!setup && !selectedProfile && !manualLogin ? <section className="auth-card profile-select" aria-labelledby="profile-select-title">
+      <div className="mobile-brand brand"><Clapperboard fill="currentColor" /> Cash<span>Video</span></div>
+      <p className="eyebrow">Welcome home</p><h2 id="profile-select-title">Who’s watching?</h2><p>Choose your profile, then enter your 4-digit PIN.</p>
+      <div className="profile-grid">{profiles.map((profile) => <button className="profile-choice" type="button" key={profile.id} onClick={() => { setSelectedProfile(profile); setError(''); }}><span className={`avatar ${profile.avatar}`}>{profile.display_name.charAt(0)}</span><b>{profile.display_name}</b></button>)}</div>
+      <button type="button" className="button glass wide" onClick={() => setManualLogin(true)}>Sign in with username</button>
+      <small>Need a profile? An administrator can add one in Admin → Household users.</small>
+    </section> : <form className="auth-card" onSubmit={submit}>
       <div className="mobile-brand brand"><Clapperboard fill="currentColor" /> Cash<span>Video</span></div>
       <p className="eyebrow">{setup ? 'Welcome home' : 'Welcome back'}</p>
-      <h2>{setup ? 'Create the admin account' : 'Sign in to CashVideo'}</h2>
-      <p>{setup ? 'The first account becomes the administrator and controls users, TMDB, and playback.' : 'Pick up exactly where you left off.'}</p>
+      <h2>{setup ? 'Create the admin account' : selectedProfile ? `Hi, ${selectedProfile.display_name}` : 'Sign in to CashVideo'}</h2>
+      <p>{setup ? 'The first account becomes the administrator and controls users, TMDB, and playback.' : selectedProfile ? 'Enter your 4-digit PIN to continue.' : 'Pick up exactly where you left off.'}</p>
       {setup && <label>Display name<input autoFocus value={form.displayName} onChange={(e) => setForm({ ...form, displayName: e.target.value })} placeholder="How should we call you?" required /></label>}
-      <label>Username<input autoFocus={!setup} autoComplete="username" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="yourname" required /></label>
-      <label>4-digit PIN<PinInput value={form.pin} onChange={(pin) => setForm({ ...form, pin })} placeholder="••••" aria-label="4-digit PIN" required /></label>
+      {!selectedProfile && <label>Username<input autoFocus={!setup} autoComplete="username" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="yourname" required /></label>}
+      <label>4-digit PIN<PinInput autoFocus={Boolean(selectedProfile)} value={form.pin} onChange={(pin) => setForm({ ...form, pin })} placeholder="••••" aria-label="4-digit PIN" required /></label>
       {error && <div className="form-error">{error}</div>}
       <button className="button primary wide" disabled={busy}>{busy ? <Spinner /> : setup ? 'Create CashVideo' : 'Sign in'}</button>
+      {!setup && <button type="button" className="button text-button wide" onClick={() => { setSelectedProfile(null); setManualLogin(false); setForm({ ...form, pin: '' }); setError(''); }}>Choose a different profile</button>}
       <small>Private by design · Data stays on your server</small>
-    </form>
+    </form>}
   </main>;
 }
 
@@ -121,19 +131,20 @@ function AdminPage({ currentUser }) {
 export default function App() {
   const [status, setStatus] = useState('loading');
   const [needsSetup, setNeedsSetup] = useState(false);
+  const [profiles, setProfiles] = useState([]);
   const [user, setUser] = useState(null);
   const [catalogueData, setCatalogueData] = useState(null);
   const navigate = useNavigate();
   const loadUser = useCallback(async () => {
     try { const { user: current } = await api('/api/me'); setUser(current); setStatus('ready'); return true; }
-    catch { setUser(null); const boot = await api('/api/bootstrap'); setNeedsSetup(boot.needsSetup); setStatus('auth'); return false; }
+    catch { setUser(null); const boot = await api('/api/bootstrap'); setNeedsSetup(boot.needsSetup); setProfiles(boot.profiles || []); setStatus('auth'); return false; }
   }, []);
   const loadCatalogue = useCallback(() => api('/api/catalogue').then(setCatalogueData), []);
   useEffect(() => { loadUser(); }, [loadUser]);
   useEffect(() => { if (user) loadCatalogue(); }, [user, loadCatalogue]);
   async function logout(callApi = true) { if (callApi) await api('/api/auth/logout', { method: 'POST' }); setUser(null); setCatalogueData(null); setStatus('auth'); navigate('/'); }
   if (status === 'loading') return <div className="splash"><div className="brand"><Clapperboard fill="currentColor" /> Cash<span>Video</span></div><Spinner /></div>;
-  if (!user) return <AuthScreen setup={needsSetup} onAuthenticated={loadUser} />;
+  if (!user) return <AuthScreen setup={needsSetup} profiles={profiles} onAuthenticated={loadUser} />;
   if (!catalogueData) return <div className="splash"><Spinner /></div>;
   return <Layout user={user} onLogout={logout}>
     <Routes>

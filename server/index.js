@@ -72,7 +72,11 @@ function jellyfinConfig() {
 }
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
-app.get('/api/bootstrap', (_req, res) => res.json({ needsSetup: db.prepare('SELECT COUNT(*) count FROM users').get().count === 0 }));
+app.get('/api/bootstrap', (_req, res) => {
+  const needsSetup = db.prepare('SELECT COUNT(*) count FROM users').get().count === 0;
+  const profiles = needsSetup ? [] : db.prepare('SELECT id,display_name,avatar FROM users ORDER BY created_at').all();
+  res.json({ needsSetup, profiles });
+});
 
 app.post('/api/auth/setup', asyncRoute(async (req, res) => {
   if (db.prepare('SELECT COUNT(*) count FROM users').get().count !== 0) return res.status(409).json({ error: 'CashVideo is already set up.' });
@@ -105,7 +109,10 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
   const key = loginKey(req);
   const failures = failedLogins.get(key);
   if (failures?.attempts >= 5 && failures.resetAt > Date.now()) return res.status(429).json({ error: 'Too many attempts. Try again in 15 minutes.' });
-  const user = db.prepare('SELECT * FROM users WHERE username=?').get(req.body.username || '');
+  const profileId = Number(req.body.profileId);
+  const user = Number.isSafeInteger(profileId) && profileId > 0
+    ? db.prepare('SELECT * FROM users WHERE id=?').get(profileId)
+    : db.prepare('SELECT * FROM users WHERE username=?').get(req.body.username || '');
   if (!validPin(req.body.pin) || !user || !(await verifyPin(req.body.pin, user.password_hash))) {
     recordFailedLogin(key);
     return res.status(401).json({ error: 'Incorrect username or PIN.' });
