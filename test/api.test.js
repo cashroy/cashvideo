@@ -61,10 +61,10 @@ test('admin creates a user and user data is isolated', async () => {
   assert.equal(created.status, 201);
   const rejectedTemplate = await request('/api/admin/settings', { method: 'PUT', body: { movieTemplate: 'javascript:alert(1)' } });
   assert.equal(rejectedTemplate.status, 400);
-  const templates = await request('/api/admin/settings', { method: 'PUT', body: { movieTemplate: 'https://media.home/movie/{id}', tvTemplate: 'https://media.home/{show}/{season}/{episode}' } });
+  const templates = await request('/api/admin/settings', { method: 'PUT', body: { movieTemplate: 'https://media.home/embed/movie/{IMDb_ID}', tvTemplate: 'https://media.home/{IMDb_ID}/{SEASON}/{EPISODE}' } });
   assert.equal(templates.status, 200);
   const movie = await request('/api/media/movie/157336');
-  assert.equal(movie.body.item.playback_template, 'https://media.home/movie/{id}');
+  assert.equal(movie.body.item.playback_template, 'https://media.home/embed/movie/{IMDb_ID}');
   const jellyfinSettings = await request('/api/admin/settings', { method: 'PUT', body: { playbackProvider: 'jellyfin', jellyfinUrl: jellyfinBase, jellyfinApiKey: 'test-jellyfin-key' } });
   assert.equal(jellyfinSettings.status, 200);
   const jellyfinDetails = await request('/api/media/movie/157336');

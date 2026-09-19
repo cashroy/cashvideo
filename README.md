@@ -82,11 +82,11 @@ To start a title at an explicit position, add seconds to the CashVideo page URL,
 Select **Custom embed templates** in **Admin > Playback system** to use an authorised iframe player instead. Save one movie URL template and one TV URL template; CashVideo applies them automatically to every catalogue title. For example:
 
 ```text
-Movie: https://media.home/movie/{id}
-TV:    https://media.home/{show}/{season}/{episode}
+Movie: https://website.com/embed/movie/{IMDb_ID}
+TV:    https://website.com/{IMDb_ID}/{SEASON}/{EPISODE}
 ```
 
-`{id}` and `{show}` are replaced with the TMDB ID. `{season}` and `{episode}` use the episode selected in the player. `{title}` and `{type}` are also available. Templates must be HTTP(S) URLs and contain `{id}`, `{show}`, or `{title}`.
+`{IMDb_ID}` is replaced with the title's IMDb ID. `{SEASON}` and `{EPISODE}` use the episode selected in the player. Lowercase placeholders work too. The existing `{id}`, `{show}`, `{title}`, and `{type}` placeholders remain available. Templates must be HTTP(S) URLs and contain an IMDb, TMDB, show, or title placeholder.
 
 Embedded players are sandboxed to prevent popups and top-level navigation. The configured service must allow iframe embedding. Existing direct MP4, WebM, or HLS title overrides remain supported by the server and take precedence over a template.
 
@@ -96,7 +96,7 @@ Native MP4, WebM, and HLS sources resume at the user's saved timestamp. TV embed
 - Player to CashVideo when finished: `{ type: "cashvideo:ended" }`
 - CashVideo to player after load: `{ type: "cashvideo:resume", currentTime }`
 
-CashVideo also recognises `vidcore:ended` as a completion event, but providers that do not publish timestamp and seek events cannot support reliable per-user timestamp resume. While a player is open, the browser Back button, Escape key, backdrop, and in-player back button all return to the previous CashVideo screen.
+CashVideo also recognises `vidcore:ended` as a completion event, but providers that do not publish timestamp and seek events cannot support reliable per-user timestamp resume. Starting playback opens a black, viewport-filling watch screen so the catalogue and details page are no longer visible. The browser Back button, Escape key, and in-player back button return to the previous CashVideo screen.
 
 For a fully local setup, serve a read-only media dataset with a media server or reverse proxy and link its URLs. Do not expose the underlying dataset with write access.
 

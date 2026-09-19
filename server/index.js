@@ -41,8 +41,8 @@ function recordFailedLogin(key) {
 
 function validPlaybackTemplate(value) {
   if (value === '') return true;
-  const placeholders = [...value.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]);
-  if (!placeholders.some((key) => ['id', 'show', 'title'].includes(key)) || placeholders.some((key) => !['id', 'show', 'title', 'type', 'season', 'episode'].includes(key))) return false;
+  const placeholders = [...value.matchAll(/\{([^}]+)\}/g)].map((match) => match[1].toLowerCase());
+  if (!placeholders.some((key) => ['id', 'show', 'title', 'imdb', 'imdb_id'].includes(key)) || placeholders.some((key) => !['id', 'show', 'title', 'type', 'season', 'episode', 'imdb', 'imdb_id'].includes(key))) return false;
   try {
     const parsed = new URL(value.replace(/\{[^}]+\}/g, 'sample'));
     return ['http:', 'https:'].includes(parsed.protocol) && !parsed.username && !parsed.password;
@@ -155,7 +155,7 @@ app.get('/api/catalogue', auth, asyncRoute(async (req, res) => {
 app.get('/api/search', auth, asyncRoute(async (req, res) => res.json({ results: await search(String(req.query.q || '').slice(0, 100)) })));
 app.get('/api/media/:type/:id', auth, asyncRoute(async (req, res) => {
   if (!['movie', 'tv'].includes(req.params.type) || !/^\d+$/.test(req.params.id)) return res.status(400).json({ error: 'Invalid title.' });
-  const data = await tmdb(`/${req.params.type}/${req.params.id}`, { append_to_response: 'videos,credits,similar' });
+  const data = await tmdb(`/${req.params.type}/${req.params.id}`, { append_to_response: 'videos,credits,similar,external_ids' });
   const source = db.prepare('SELECT source_url FROM media_sources WHERE media_id=? AND media_type=?').get(req.params.id, req.params.type);
   const progressState = db.prepare('SELECT position,duration,completed,season,episode,updated_at FROM progress WHERE user_id=? AND media_id=? AND media_type=?').get(req.user.id, req.params.id, req.params.type) || null;
   const provider = playbackProvider();
@@ -166,7 +166,7 @@ app.get('/api/media/:type/:id', auth, asyncRoute(async (req, res) => {
     if (!fallback) return res.status(404).json({ error: 'Title not found.' });
     return res.json({ item: { ...fallback, source_url: source?.source_url || null, playback_template: playbackTemplate || null, progress: progressState, ...playbackState } });
   }
-  res.json({ item: { ...normalize(data, req.params.type), cast: data.credits?.cast?.slice(0, 8) || [], similar: data.similar?.results?.slice(0, 12).map((item) => normalize(item, req.params.type)) || [], source_url: source?.source_url || null, playback_template: playbackTemplate || null, progress: progressState, ...playbackState } });
+  res.json({ item: { ...normalize(data, req.params.type), imdb_id: data.imdb_id || data.external_ids?.imdb_id || null, cast: data.credits?.cast?.slice(0, 8) || [], similar: data.similar?.results?.slice(0, 12).map((item) => normalize(item, req.params.type)) || [], source_url: source?.source_url || null, playback_template: playbackTemplate || null, progress: progressState, ...playbackState } });
 }));
 
 app.get('/api/playback/:type/:id', auth, asyncRoute(async (req, res) => {
@@ -238,7 +238,7 @@ app.put('/api/admin/settings', auth, admin, asyncRoute(async (req, res) => {
   if (Object.hasOwn(req.body, 'movieTemplate') || Object.hasOwn(req.body, 'tvTemplate')) {
     const movieTemplate = Object.hasOwn(req.body, 'movieTemplate') ? String(req.body.movieTemplate || '').trim() : setting(templateKeys.movie);
     const tvTemplate = Object.hasOwn(req.body, 'tvTemplate') ? String(req.body.tvTemplate || '').trim() : setting(templateKeys.tv);
-    if (!validPlaybackTemplate(movieTemplate) || !validPlaybackTemplate(tvTemplate)) return res.status(400).json({ error: 'Each playback template must be an HTTP(S) URL containing {id}, {show}, or {title}.' });
+    if (!validPlaybackTemplate(movieTemplate) || !validPlaybackTemplate(tvTemplate)) return res.status(400).json({ error: 'Each playback template must be an HTTP(S) URL containing {IMDb_ID}, {id}, {show}, or {title}.' });
     if (Object.hasOwn(req.body, 'movieTemplate')) saveSetting(templateKeys.movie, movieTemplate);
     if (Object.hasOwn(req.body, 'tvTemplate')) saveSetting(templateKeys.tv, tvTemplate);
   }

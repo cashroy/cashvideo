@@ -2,23 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Hls from 'hls.js';
 import { ArrowLeft, Check, Info, Play, Plus, Search } from 'lucide-react';
 import { api } from './api.js';
-import { parseResumeTimestamp } from './player.js';
+import { parseResumeTimestamp, resolvePlaybackTemplate } from './player.js';
 
 export function Spinner() { return <div className="spinner" aria-label="Loading" />; }
-
-export function resolvePlaybackTemplate(template, item, season = 1, episode = 1) {
-  if (!template) return null;
-  const id = item.id || item.media_id;
-  const values = {
-    id,
-    show: id,
-    title: item.title || item.name || '',
-    type: item.media_type,
-    season,
-    episode,
-  };
-  return template.replace(/\{(id|show|title|type|season|episode)\}/g, (_match, key) => encodeURIComponent(String(values[key] ?? '')));
-}
 
 export function MediaCard({ item, onOpen, inList = false, onListChange, progress }) {
   const title = item.title || item.name;
@@ -86,6 +72,8 @@ export function DetailsModal({ item: initial, onClose, onListChange, inList, onS
     }).catch(() => {}).finally(() => setLoading(false));
   }, [initial]);
   useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
     if (!pushedHistoryRef.current) {
       window.history.pushState({ ...window.history.state, cashvideoPlayer: true }, '');
       pushedHistoryRef.current = true;
@@ -97,7 +85,7 @@ export function DetailsModal({ item: initial, onClose, onListChange, inList, onS
     };
     window.addEventListener('popstate', handlePopState);
     window.addEventListener('keydown', handleKeyDown);
-    return () => { window.removeEventListener('popstate', handlePopState); window.removeEventListener('keydown', handleKeyDown); };
+    return () => { document.body.style.overflow = previousOverflow; window.removeEventListener('popstate', handlePopState); window.removeEventListener('keydown', handleKeyDown); };
   }, []);
   useEffect(() => {
     if (!playing || !item.source_url || !videoRef.current) return;
@@ -162,13 +150,13 @@ export function DetailsModal({ item: initial, onClose, onListChange, inList, onS
     }
   };
   const resumeAvailable = resumePosition > 1 || (item.media_type === 'tv' && Boolean(item.progress || initial.season));
-  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && requestClose()}>
-    <article className="details-modal" role="dialog" aria-modal="true" aria-labelledby="media-details-title">
+  return <div className={`modal-backdrop${playing ? ' watch-screen' : ''}`} onMouseDown={(event) => event.target === event.currentTarget && requestClose()}>
+    <article className="details-modal" role="dialog" aria-modal="true" aria-labelledby={playing ? undefined : 'media-details-title'} aria-label={playing ? `Playing ${item.title || item.name}` : undefined}>
       <button className="modal-close" aria-label="Back to previous page" onClick={requestClose}><ArrowLeft /></button>
-      {playing ? <div className="player-wrap">{embedUrl ? <iframe ref={iframeRef} src={embedUrl} title={`Playing ${item.title || item.name}`} allow="autoplay; encrypted-media; fullscreen; picture-in-picture" sandbox="allow-scripts allow-same-origin allow-forms allow-presentation" referrerPolicy="no-referrer" allowFullScreen onLoad={() => { if (resumePosition > 1) iframeRef.current?.contentWindow?.postMessage({ type: 'cashvideo:resume', currentTime: resumePosition }, new URL(embedUrl).origin); }} /> : <video ref={videoRef} controls autoPlay onLoadedMetadata={(event) => { if (resumePosition > 0) event.currentTarget.currentTime = Math.min(resumePosition, Math.max(0, event.currentTarget.duration - 1)); }} onPause={() => saveProgress(true)} onEnded={() => saveProgress(true)} />}</div> : <div className="modal-visual" style={{ '--hero': `url("${item.backdrop_path || item.poster_path}")` }}>
+      {playing ? <div className="player-wrap">{embedUrl ? <iframe ref={iframeRef} src={embedUrl} title={`Playing ${item.title || item.name}`} width="100%" height="100%" frameBorder="0" allow="autoplay; encrypted-media; fullscreen; picture-in-picture" sandbox="allow-scripts allow-same-origin allow-forms allow-presentation" referrerPolicy="no-referrer" allowFullScreen onLoad={() => { if (resumePosition > 1) iframeRef.current?.contentWindow?.postMessage({ type: 'cashvideo:resume', currentTime: resumePosition }, new URL(embedUrl).origin); }} /> : <video ref={videoRef} controls autoPlay onLoadedMetadata={(event) => { if (resumePosition > 0) event.currentTarget.currentTime = Math.min(resumePosition, Math.max(0, event.currentTarget.duration - 1)); }} onPause={() => saveProgress(true)} onEnded={() => saveProgress(true)} />}</div> : <div className="modal-visual" style={{ '--hero': `url("${item.backdrop_path || item.poster_path}")` }}>
         <button className="play-large" aria-label={`${resumeAvailable ? 'Resume' : 'Play'} ${item.title || item.name}`} disabled={!playable || resolving} onClick={startPlayback}><Play fill="currentColor" /><span>{resolving ? 'Loading…' : resumeAvailable ? 'Resume' : 'Play'}</span></button>
       </div>}
-      <div className="modal-copy">
+      {!playing && <div className="modal-copy">
         {loading && <Spinner />}
         <h2 id="media-details-title">{item.title || item.name}</h2>
         <div className="hero-facts"><span className="match">{Math.round((item.vote_average || 8) * 10)}% match</span><span>{(item.date || '').slice(0, 4)}</span><span>{item.media_type === 'tv' ? 'Series' : 'Movie'}</span></div>
@@ -177,7 +165,7 @@ export function DetailsModal({ item: initial, onClose, onListChange, inList, onS
         {playerError && <div className="form-error">{playerError}</div>}
         {!playable && <div className="source-notice"><Info size={18} /><span>{item.playback_provider === 'jellyfin' ? 'Jellyfin is the default player. An administrator needs to connect it before playback is available.' : 'No playback system is configured yet. An administrator can add one template for every movie and series.'}</span></div>}
         <button className="button glass" onClick={() => onListChange(item, !inList)}>{inList ? <Check size={18} /> : <Plus size={18} />} {inList ? 'Remove from watchlist' : 'Add to watchlist'}</button>
-      </div>
+      </div>}
     </article>
   </div>;
 }
