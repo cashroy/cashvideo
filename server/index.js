@@ -6,6 +6,8 @@ import { db, cleanExpiredSessions } from './db.js';
 import { auth, admin, clearSession, createSession, hashPin, publicUser, verifyPin } from './auth.js';
 import { normalizeJellyfinUrl, proxyJellyfinMedia, resolveJellyfinPlayback, verifyJellyfin } from './jellyfin.js';
 import { catalogue, recommendations, search, tmdb, normalize } from './tmdb.js';
+import { filterForUser, titleAllowed } from './content-rating.js';
+import { nextEpisodeFor } from './episodes.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -23,6 +25,13 @@ const failedLogins = new Map();
 const loginWindowMs = 15 * 60 * 1000;
 const templateKeys = { movie: 'playback_movie_template', tv: 'playback_tv_template' };
 const jellyfinKeys = { url: 'jellyfin_url', apiKey: 'jellyfin_api_key' };
+const contentRatingLimits = new Set([7, 13, 16, 18]);
+
+function contentRatingLimit(value) {
+  if (value === '' || value == null) return null;
+  const limit = Number(value);
+  return contentRatingLimits.has(limit) ? limit : undefined;
+}
 
 function loginKey(req) {
   return `${req.ip}:${String(req.body.username || '').trim().toLowerCase()}`;
@@ -149,20 +158,31 @@ app.delete('/api/me', auth, (req, res) => {
 });
 
 app.get('/api/catalogue', auth, asyncRoute(async (req, res) => {
-  const [trending, popular] = await Promise.all([catalogue('trending'), catalogue('popular')]);
-  const continued = db.prepare('SELECT * FROM progress WHERE user_id=? AND completed=0 AND position>0 ORDER BY updated_at DESC LIMIT 20').all(req.user.id);
-  const watchlist = db.prepare('SELECT * FROM watchlist WHERE user_id=? ORDER BY added_at DESC').all(req.user.id);
+  let [trending, popular] = await Promise.all([catalogue('trending'), catalogue('popular')]);
+  let continued = db.prepare("SELECT * FROM progress WHERE user_id=? AND completed=0 AND (position>0 OR media_type='tv') ORDER BY updated_at DESC LIMIT 20").all(req.user.id);
+  let watchlist = db.prepare('SELECT * FROM watchlist WHERE user_id=? ORDER BY added_at DESC').all(req.user.id);
   let recommended = [];
   const recent = db.prepare('SELECT media_id,media_type FROM progress WHERE user_id=? ORDER BY updated_at DESC LIMIT 1').get(req.user.id);
   if (recent) recommended = await recommendations(recent.media_type, recent.media_id);
   if (!recommended.length) recommended = trending.slice().sort((a, b) => (b.vote_average || 0) - (a.vote_average || 0));
+  [trending, popular, recommended, continued, watchlist] = await Promise.all([
+    filterForUser(trending, req.user),
+    filterForUser(popular, req.user),
+    filterForUser(recommended, req.user),
+    filterForUser(continued, req.user),
+    filterForUser(watchlist, req.user),
+  ]);
   res.json({ trending, popular, recommended, continued, watchlist, configured: Boolean(db.prepare("SELECT value FROM settings WHERE key='tmdb_token'").get()?.value) });
 }));
 
-app.get('/api/search', auth, asyncRoute(async (req, res) => res.json({ results: await search(String(req.query.q || '').slice(0, 100)) })));
+app.get('/api/search', auth, asyncRoute(async (req, res) => {
+  const results = await search(String(req.query.q || '').slice(0, 100));
+  res.json({ results: await filterForUser(results, req.user) });
+}));
 app.get('/api/media/:type/:id', auth, asyncRoute(async (req, res) => {
   if (!['movie', 'tv'].includes(req.params.type) || !/^\d+$/.test(req.params.id)) return res.status(400).json({ error: 'Invalid title.' });
-  const data = await tmdb(`/${req.params.type}/${req.params.id}`, { append_to_response: 'videos,credits,similar,external_ids' });
+  const ratingAppend = req.params.type === 'movie' ? 'release_dates' : 'content_ratings';
+  const data = await tmdb(`/${req.params.type}/${req.params.id}`, { append_to_response: `videos,credits,similar,external_ids,${ratingAppend}` });
   const source = db.prepare('SELECT source_url FROM media_sources WHERE media_id=? AND media_type=?').get(req.params.id, req.params.type);
   const progressState = db.prepare('SELECT position,duration,completed,season,episode,updated_at FROM progress WHERE user_id=? AND media_id=? AND media_type=?').get(req.user.id, req.params.id, req.params.type) || null;
   const provider = playbackProvider();
@@ -171,9 +191,12 @@ app.get('/api/media/:type/:id', auth, asyncRoute(async (req, res) => {
   if (!data) {
     const fallback = (await catalogue()).find((item) => item.id === Number(req.params.id) && item.media_type === req.params.type);
     if (!fallback) return res.status(404).json({ error: 'Title not found.' });
+    if (!(await titleAllowed(req.user, req.params.type, req.params.id, fallback))) return res.status(403).json({ error: 'This title is blocked by this profile’s age restriction.' });
     return res.json({ item: { ...fallback, source_url: source?.source_url || null, playback_template: playbackTemplate || null, progress: progressState, ...playbackState } });
   }
-  res.json({ item: { ...normalize(data, req.params.type), imdb_id: data.imdb_id || data.external_ids?.imdb_id || null, cast: data.credits?.cast?.slice(0, 8) || [], similar: data.similar?.results?.slice(0, 12).map((item) => normalize(item, req.params.type)) || [], source_url: source?.source_url || null, playback_template: playbackTemplate || null, progress: progressState, ...playbackState } });
+  if (!(await titleAllowed(req.user, req.params.type, req.params.id, data))) return res.status(403).json({ error: 'This title is blocked by this profile’s age restriction.' });
+  const similar = await filterForUser(data.similar?.results?.slice(0, 12).map((item) => normalize(item, req.params.type)) || [], req.user);
+  res.json({ item: { ...normalize(data, req.params.type), imdb_id: data.imdb_id || data.external_ids?.imdb_id || null, cast: data.credits?.cast?.slice(0, 8) || [], similar, source_url: source?.source_url || null, playback_template: playbackTemplate || null, progress: progressState, ...playbackState } });
 }));
 
 app.get('/api/playback/:type/:id', auth, asyncRoute(async (req, res) => {
@@ -184,8 +207,9 @@ app.get('/api/playback/:type/:id', auth, asyncRoute(async (req, res) => {
   const season = Number(req.query.season ?? 1);
   const episode = Number(req.query.episode ?? 1);
   if (req.params.type === 'tv' && (![season, episode].every(Number.isInteger) || season < 1 || episode < 1 || season > 9999 || episode > 9999)) return res.status(400).json({ error: 'Season and episode must be positive whole numbers.' });
-  const data = await tmdb(`/${req.params.type}/${req.params.id}`);
+  const data = await tmdb(`/${req.params.type}/${req.params.id}`, { append_to_response: req.params.type === 'movie' ? 'release_dates' : 'content_ratings' });
   const fallback = data ? null : (await catalogue()).find((item) => item.id === Number(req.params.id) && item.media_type === req.params.type);
+  if (!(await titleAllowed(req.user, req.params.type, req.params.id, data || fallback))) return res.status(403).json({ error: 'This title is blocked by this profile’s age restriction.' });
   const title = data?.title || data?.name || fallback?.title || '';
   try {
     const playback = await resolveJellyfinPlayback(config, { type: req.params.type, tmdbId: req.params.id, title, season, episode });
@@ -202,29 +226,60 @@ app.get('/api/jellyfin/stream', auth, asyncRoute(async (req, res) => {
   await proxyJellyfinMedia(req, res, config);
 }));
 
-app.put('/api/watchlist/:type/:id', auth, (req, res) => {
+app.put('/api/watchlist/:type/:id', auth, asyncRoute(async (req, res) => {
   if (!['movie', 'tv'].includes(req.params.type) || !/^\d+$/.test(req.params.id)) return res.status(400).json({ error: 'Invalid title.' });
+  if (!(await titleAllowed(req.user, req.params.type, req.params.id))) return res.status(403).json({ error: 'This title is blocked by this profile’s age restriction.' });
   db.prepare('INSERT OR REPLACE INTO watchlist(user_id,media_id,media_type,title,poster_path,added_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)').run(req.user.id, Number(req.params.id), req.params.type, String(req.body.title || 'Untitled').slice(0, 200), req.body.posterPath || null);
   res.json({ saved: true });
-});
+}));
 app.delete('/api/watchlist/:type/:id', auth, (req, res) => { db.prepare('DELETE FROM watchlist WHERE user_id=? AND media_id=? AND media_type=?').run(req.user.id, Number(req.params.id), req.params.type); res.json({ saved: false }); });
-app.put('/api/progress/:type/:id', auth, (req, res) => {
+app.put('/api/progress/:type/:id', auth, asyncRoute(async (req, res) => {
   if (!['movie', 'tv'].includes(req.params.type) || !/^\d+$/.test(req.params.id)) return res.status(400).json({ error: 'Invalid title.' });
+  if (!(await titleAllowed(req.user, req.params.type, req.params.id))) return res.status(403).json({ error: 'This title is blocked by this profile’s age restriction.' });
   const rawPosition = Number(req.body.position) || 0;
   const rawDuration = Number(req.body.duration) || 0;
   const position = Number.isFinite(rawPosition) && rawPosition >= 0 ? rawPosition : 0;
   const duration = Number.isFinite(rawDuration) && rawDuration >= 0 ? rawDuration : 0;
-  const season = req.params.type === 'tv' ? Number(req.body.season ?? 1) : null;
-  const episode = req.params.type === 'tv' ? Number(req.body.episode ?? 1) : null;
+  let season = req.params.type === 'tv' ? Number(req.body.season ?? 1) : null;
+  let episode = req.params.type === 'tv' ? Number(req.body.episode ?? 1) : null;
   if (req.params.type === 'tv' && (![season, episode].every(Number.isInteger) || season < 1 || episode < 1 || season > 9999 || episode > 9999)) return res.status(400).json({ error: 'Season and episode must be positive whole numbers.' });
-  const completed = Boolean(req.body.completed || (duration > 0 && position / duration >= 0.92));
+  const explicitlyCompleted = req.body.completed === true;
+  const existing = req.params.type === 'tv' ? db.prepare('SELECT position,completed,season,episode FROM progress WHERE user_id=? AND media_id=? AND media_type=?').get(req.user.id, Number(req.params.id), req.params.type) : null;
+  if (!explicitlyCompleted && existing?.completed === 0 && existing.position === 0 && (existing.season !== season || existing.episode !== episode)) {
+    return res.json({ ok: true, nextEpisode: { season: existing.season, episode: existing.episode }, ignoredStaleUpdate: true });
+  }
+  let completed = Boolean(explicitlyCompleted || (req.params.type === 'movie' && duration > 0 && position / duration >= 0.92));
+  let savedPosition = position;
+  let savedDuration = duration;
+  let nextEpisode = null;
+  let completionDeferred = false;
+  if (req.params.type === 'tv' && explicitlyCompleted) {
+    const resolvedNextEpisode = await nextEpisodeFor(req.params.id, season, episode);
+    if (resolvedNextEpisode === undefined) {
+      savedPosition = Math.max(1, position);
+      completed = false;
+      completionDeferred = true;
+    } else if (resolvedNextEpisode) {
+      nextEpisode = resolvedNextEpisode;
+      season = nextEpisode.season;
+      episode = nextEpisode.episode;
+      savedPosition = 0;
+      savedDuration = 0;
+      completed = false;
+    }
+  }
   db.prepare(`INSERT INTO progress(user_id,media_id,media_type,title,poster_path,position,duration,completed,season,episode,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
-    ON CONFLICT(user_id,media_id,media_type) DO UPDATE SET title=excluded.title,poster_path=excluded.poster_path,position=excluded.position,duration=excluded.duration,completed=excluded.completed,season=excluded.season,episode=excluded.episode,updated_at=CURRENT_TIMESTAMP`).run(req.user.id, Number(req.params.id), req.params.type, String(req.body.title || 'Untitled').slice(0, 200), req.body.posterPath || null, position, duration, completed ? 1 : 0, season, episode);
+    ON CONFLICT(user_id,media_id,media_type) DO UPDATE SET title=excluded.title,poster_path=excluded.poster_path,position=excluded.position,duration=excluded.duration,completed=excluded.completed,season=excluded.season,episode=excluded.episode,updated_at=CURRENT_TIMESTAMP`).run(req.user.id, Number(req.params.id), req.params.type, String(req.body.title || 'Untitled').slice(0, 200), req.body.posterPath || null, savedPosition, savedDuration, completed ? 1 : 0, season, episode);
+  res.json({ ok: true, completed, nextEpisode, completionDeferred });
+}));
+app.delete('/api/progress/:type/:id', auth, (req, res) => {
+  if (!['movie', 'tv'].includes(req.params.type) || !/^\d+$/.test(req.params.id)) return res.status(400).json({ error: 'Invalid title.' });
+  db.prepare('DELETE FROM progress WHERE user_id=? AND media_id=? AND media_type=?').run(req.user.id, Number(req.params.id), req.params.type);
   res.json({ ok: true });
 });
 
 app.get('/api/admin', auth, admin, (_req, res) => {
-  const users = db.prepare('SELECT id,username,role,display_name,age,avatar,created_at FROM users ORDER BY created_at').all();
+  const users = db.prepare('SELECT id,username,role,display_name,age,max_content_rating,avatar,created_at FROM users ORDER BY created_at').all();
   const sources = db.prepare('SELECT * FROM media_sources ORDER BY title').all();
   const token = db.prepare("SELECT value FROM settings WHERE key='tmdb_token'").get()?.value || '';
   const jellyfinApiKey = setting(jellyfinKeys.apiKey);
@@ -271,16 +326,25 @@ app.put('/api/admin/settings', auth, admin, asyncRoute(async (req, res) => {
   res.json({ ok: true });
 }));
 app.post('/api/admin/users', auth, admin, asyncRoute(async (req, res) => {
-  const { username, pin, displayName, role = 'user' } = req.body;
-  if (!validUsername(username) || !validPin(pin) || !['user', 'admin'].includes(role)) return res.status(400).json({ error: 'Enter a valid username, 4-digit PIN, and role.' });
+  const { username, pin, displayName, role = 'user', maxContentRating } = req.body;
+  const limit = contentRatingLimit(maxContentRating);
+  if (!validUsername(username) || !validPin(pin) || !['user', 'admin'].includes(role) || limit === undefined) return res.status(400).json({ error: 'Enter a valid username, 4-digit PIN, role, and age restriction.' });
   try {
-    const result = db.prepare('INSERT INTO users(username,password_hash,role,display_name) VALUES(?,?,?,?)').run(username.trim(), await hashPin(pin), role, String(displayName || username).trim().slice(0, 60));
+    const result = db.prepare('INSERT INTO users(username,password_hash,role,display_name,max_content_rating) VALUES(?,?,?,?,?)').run(username.trim(), await hashPin(pin), role, String(displayName || username).trim().slice(0, 60), limit);
     res.status(201).json({ id: Number(result.lastInsertRowid) });
   } catch (error) {
     if (String(error).includes('UNIQUE')) return res.status(409).json({ error: 'That username is already in use.' });
     throw error;
   }
 }));
+app.patch('/api/admin/users/:id/restriction', auth, admin, (req, res) => {
+  const id = Number(req.params.id);
+  const limit = contentRatingLimit(req.body.maxContentRating);
+  if (!Number.isSafeInteger(id) || id < 1 || limit === undefined) return res.status(400).json({ error: 'Choose a valid age restriction.' });
+  const result = db.prepare('UPDATE users SET max_content_rating=? WHERE id=?').run(limit, id);
+  if (!result.changes) return res.status(404).json({ error: 'User not found.' });
+  res.json({ ok: true });
+});
 app.delete('/api/admin/users/:id', auth, admin, (req, res) => {
   const id = Number(req.params.id);
   if (id === req.user.id) return res.status(400).json({ error: 'Delete your own account from profile settings.' });

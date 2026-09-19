@@ -13,6 +13,7 @@ const server = app.listen(0, '127.0.0.1');
 await new Promise((resolve) => server.once('listening', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
 let cookie = '';
+let viewerId;
 const jellyfin = createServer(async (req, res) => {
   if (req.headers['x-emby-token'] !== 'test-jellyfin-key') { res.writeHead(401).end(); return; }
   const url = new URL(req.url, 'http://jellyfin.test');
@@ -64,6 +65,7 @@ test('first account becomes admin and setup closes', async () => {
 test('admin creates a user and user data is isolated', async () => {
   const created = await request('/api/admin/users', { method: 'POST', body: { username: 'viewer', pin: '2468', displayName: 'Viewer' } });
   assert.equal(created.status, 201);
+  viewerId = created.body.id;
   const rejectedTemplate = await request('/api/admin/settings', { method: 'PUT', body: { movieTemplate: 'javascript:alert(1)' } });
   assert.equal(rejectedTemplate.status, 400);
   const templates = await request('/api/admin/settings', { method: 'PUT', body: { movieTemplate: 'https://media.home/embed/movie/{IMDb_ID}', tvTemplate: 'https://media.home/{IMDb_ID}/{SEASON}/{EPISODE}' } });
@@ -108,6 +110,10 @@ test('progress is saved and returned as continue watching', async () => {
   const details = await request('/api/media/movie/27205');
   assert.equal(details.body.item.progress.position, 420);
   assert.equal(details.body.item.progress.duration, 7200);
+  const removed = await request('/api/progress/movie/27205', { method: 'DELETE' });
+  assert.equal(removed.status, 200);
+  const clearedHome = await request('/api/catalogue');
+  assert.equal(clearedHome.body.continued.some((item) => item.media_id === 27205), false);
   const invalid = await request('/api/progress/movie/not-a-number', { method: 'PUT', body: { title: 'Invalid' } });
   assert.equal(invalid.status, 400);
   const invalidEpisode = await request('/api/progress/tv/1399', { method: 'PUT', body: { title: 'Game of Thrones', season: 0, episode: 2 } });
@@ -121,6 +127,59 @@ test('progress is saved and returned as continue watching', async () => {
   const show = updatedHome.body.continued.find((item) => item.media_id === 1399);
   assert.equal(show.season, 3);
   assert.equal(show.episode, 7);
+
+  const nextEpisode = await request('/api/progress/tv/1399', { method: 'PUT', body: { title: 'Game of Thrones', position: 3600, duration: 3600, season: 3, episode: 7, completed: true } });
+  assert.deepEqual(nextEpisode.body.nextEpisode, { season: 3, episode: 8 });
+  const queuedEpisode = (await request('/api/catalogue')).body.continued.find((item) => item.media_id === 1399);
+  assert.equal(queuedEpisode.position, 0);
+  assert.equal(queuedEpisode.season, 3);
+  assert.equal(queuedEpisode.episode, 8);
+  const staleCheckpoint = await request('/api/progress/tv/1399', { method: 'PUT', body: { title: 'Game of Thrones', position: 3599, duration: 3600, season: 3, episode: 7 } });
+  assert.equal(staleCheckpoint.body.ignoredStaleUpdate, true);
+  const nextSeason = await request('/api/progress/tv/1399', { method: 'PUT', body: { title: 'Game of Thrones', position: 3600, duration: 3600, season: 3, episode: 10, completed: true } });
+  assert.deepEqual(nextSeason.body.nextEpisode, { season: 4, episode: 1 });
+  const finalEpisode = await request('/api/progress/tv/1399', { method: 'PUT', body: { title: 'Game of Thrones', position: 3600, duration: 3600, season: 8, episode: 6, completed: true } });
+  assert.equal(finalEpisode.body.completed, true);
+  assert.equal(finalEpisode.body.nextEpisode, null);
+  assert.equal((await request('/api/catalogue')).body.continued.some((item) => item.media_id === 1399), false);
+
+  const unknownSeries = await request('/api/progress/tv/999999', { method: 'PUT', body: { title: 'Unknown series', position: 1800, duration: 1800, season: 1, episode: 1, completed: true } });
+  assert.equal(unknownSeries.body.completionDeferred, true);
+  assert.equal((await request('/api/catalogue')).body.continued.some((item) => item.media_id === 999999), true);
+  await request('/api/progress/tv/999999', { method: 'DELETE' });
+
+  await request('/api/progress/movie/27205', { method: 'PUT', body: { title: 'Inception', position: 7000, duration: 7200, completed: true } });
+  assert.equal((await request('/api/catalogue')).body.continued.some((item) => item.media_id === 27205), false);
+});
+
+test('admin age restrictions filter discovery and block direct playback access', async () => {
+  await request('/api/auth/logout', { method: 'POST' });
+  const adminLogin = await request('/api/auth/login', { method: 'POST', body: { username: 'owner', pin: '1234' } });
+  assert.equal(adminLogin.status, 200);
+  const invalid = await request(`/api/admin/users/${viewerId}/restriction`, { method: 'PATCH', body: { maxContentRating: 12 } });
+  assert.equal(invalid.status, 400);
+  const restricted = await request(`/api/admin/users/${viewerId}/restriction`, { method: 'PATCH', body: { maxContentRating: 13 } });
+  assert.equal(restricted.status, 200);
+  await request('/api/auth/logout', { method: 'POST' });
+  const viewerLogin = await request('/api/auth/login', { method: 'POST', body: { username: 'viewer', pin: '2468' } });
+  assert.equal(viewerLogin.status, 200);
+
+  const home = await request('/api/catalogue');
+  assert.equal(home.body.trending.some((item) => item.id === 1399), false);
+  assert.equal(home.body.trending.some((item) => item.id === 157336), true);
+  assert.equal(home.body.continued.some((item) => item.media_id === 1399), false);
+  const searchResults = await request('/api/search?q=Game');
+  assert.deepEqual(searchResults.body.results, []);
+  const blockedDetails = await request('/api/media/tv/1399');
+  assert.equal(blockedDetails.status, 403);
+  const blockedPlayback = await request('/api/playback/tv/1399?season=3&episode=7');
+  assert.equal(blockedPlayback.status, 403);
+  const blockedProgress = await request('/api/progress/tv/1399', { method: 'PUT', body: { title: 'Game of Thrones', position: 20, season: 3, episode: 7 } });
+  assert.equal(blockedProgress.status, 403);
+  const allowedDetails = await request('/api/media/movie/157336');
+  assert.equal(allowedDetails.status, 200);
+  const forbiddenAdminChange = await request(`/api/admin/users/${viewerId}/restriction`, { method: 'PATCH', body: { maxContentRating: '' } });
+  assert.equal(forbiddenAdminChange.status, 403);
 });
 
 test('users can change PIN and repeated failed logins are throttled', async () => {

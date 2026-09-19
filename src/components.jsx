@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Hls from 'hls.js';
-import { ArrowLeft, Check, Info, Play, Plus, Search } from 'lucide-react';
+import { ArrowLeft, Check, Info, Play, Plus, Search, X } from 'lucide-react';
 import { api } from './api.js';
 import { addEmbedPlaybackParams, parseResumeTimestamp, resolvePlaybackTemplate } from './player.js';
 
 export function Spinner() { return <div className="spinner" aria-label="Loading" />; }
 
-export function MediaCard({ item, onOpen, inList = false, onListChange, progress }) {
+export function MediaCard({ item, onOpen, inList = false, onListChange, onRemove, progress }) {
   const title = item.title || item.name;
   const percent = progress ?? (item.duration ? Math.min(100, (item.position / item.duration) * 100) : 0);
   return (
@@ -18,20 +18,21 @@ export function MediaCard({ item, onOpen, inList = false, onListChange, progress
       </div>
       <div className="card-meta">
         <div><strong>{title}</strong><span>{item.media_type === 'tv' && item.season ? `S${item.season} E${item.episode}` : `${(item.date || item.release_date || item.first_air_date || '').slice(0, 4)} · ${item.media_type === 'tv' ? 'Series' : 'Movie'}`}</span></div>
+        {onRemove && <button className="icon-button remove-progress" aria-label={`Remove ${title} from Continue Watching`} title="Remove from Continue Watching" onClick={(event) => { event.stopPropagation(); onRemove(item); }}><X size={17} /></button>}
         {onListChange && <button className="icon-button" aria-label={inList ? 'Remove from watchlist' : 'Add to watchlist'} onClick={(event) => { event.stopPropagation(); onListChange(item, !inList); }}>{inList ? <Check size={17} /> : <Plus size={17} />}</button>}
       </div>
     </article>
   );
 }
 
-export function Rail({ title, subtitle, items = [], onOpen, watchlist = [], onListChange, numbered = false }) {
+export function Rail({ title, subtitle, items = [], onOpen, watchlist = [], onListChange, onRemove, numbered = false }) {
   if (!items.length) return null;
   return <section className="rail-section">
     <div className="section-heading"><div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div></div>
     <div className="rail">
       {items.map((item, index) => <div className={numbered ? 'ranked' : ''} key={`${item.media_type}-${item.id || item.media_id}`}>
         {numbered && <b aria-hidden="true">{index + 1}</b>}
-        <MediaCard item={{ ...item, id: item.id || item.media_id }} onOpen={onOpen} inList={watchlist.some((saved) => Number(saved.media_id) === Number(item.id || item.media_id) && saved.media_type === item.media_type)} onListChange={onListChange} />
+        <MediaCard item={{ ...item, id: item.id || item.media_id }} onOpen={onOpen} inList={watchlist.some((saved) => Number(saved.media_id) === Number(item.id || item.media_id) && saved.media_type === item.media_type)} onListChange={onListChange} onRemove={onRemove} />
       </div>)}
     </div>
   </section>;
@@ -63,6 +64,7 @@ export function DetailsModal({ item: initial, onClose, onListChange, inList, onS
   const onCloseRef = useRef(onClose);
   const pushedHistoryRef = useRef(false);
   const lastSavedRef = useRef(-1);
+  const finishedRef = useRef(false);
   onCloseRef.current = onClose;
   useEffect(() => {
     api(`/api/media/${initial.media_type}/${initial.id || initial.media_id}`).then(({ item: full }) => {
@@ -102,6 +104,8 @@ export function DetailsModal({ item: initial, onClose, onListChange, inList, onS
   const playable = Boolean(item.source_url || embedUrl || jellyfinReady);
   const requestClose = () => { if (pushedHistoryRef.current) window.history.back(); else onCloseRef.current(); };
   const saveEmbeddedProgress = useCallback((updates = {}) => {
+    if (finishedRef.current && updates.completed !== true) return;
+    if (updates.completed === true) finishedRef.current = true;
     const position = Number.isFinite(updates.position) ? updates.position : Math.max(1, resumePosition);
     const duration = Number.isFinite(updates.duration) ? updates.duration : Number(item.progress?.duration) || 0;
     api(`/api/progress/${item.media_type}/${item.id || item.media_id}`, { method: 'PUT', body: { title: item.title, posterPath: item.poster_path, position, duration, season, episode, completed: updates.completed } }).then(onSaved).catch(() => {});
@@ -121,13 +125,15 @@ export function DetailsModal({ item: initial, onClose, onListChange, inList, onS
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
   }, [embedUrl, playing, saveEmbeddedProgress]);
-  const saveProgress = useCallback((force = false) => {
+  const saveProgress = useCallback((force = false, completed = false) => {
+    if (finishedRef.current && !completed) return;
     const video = videoRef.current;
     if (!video || !video.duration) return;
     const bucket = Math.floor(video.currentTime / 20);
     if (!force && bucket === lastSavedRef.current) return;
     lastSavedRef.current = bucket;
-    api(`/api/progress/${item.media_type}/${item.id || item.media_id}`, { method: 'PUT', body: { title: item.title, posterPath: item.poster_path, position: video.currentTime, duration: video.duration, season, episode } }).then(onSaved).catch(() => {});
+    if (completed) finishedRef.current = true;
+    api(`/api/progress/${item.media_type}/${item.id || item.media_id}`, { method: 'PUT', body: { title: item.title, posterPath: item.poster_path, position: video.currentTime, duration: video.duration, season, episode, completed } }).then(onSaved).catch(() => {});
   }, [episode, item, onSaved, season]);
   useEffect(() => {
     if (!playing || !item.source_url || embedUrl) return;
@@ -154,7 +160,7 @@ export function DetailsModal({ item: initial, onClose, onListChange, inList, onS
   return <div className={`modal-backdrop${playing ? ' watch-screen' : ''}`} onMouseDown={(event) => event.target === event.currentTarget && requestClose()}>
     <article className="details-modal" role="dialog" aria-modal="true" aria-labelledby={playing ? undefined : 'media-details-title'} aria-label={playing ? `Playing ${item.title || item.name}` : undefined}>
       <button className="modal-close" aria-label="Back to previous page" onClick={requestClose}><ArrowLeft /></button>
-      {playing ? <div className="player-wrap">{embedUrl ? <iframe ref={iframeRef} src={embedUrl} title={`Playing ${item.title || item.name}`} width="100%" height="100%" frameBorder="0" allow="autoplay; encrypted-media; fullscreen; picture-in-picture" referrerPolicy="no-referrer" allowFullScreen onLoad={() => { if (resumePosition > 1) iframeRef.current?.contentWindow?.postMessage({ type: 'cashvideo:resume', currentTime: resumePosition }, new URL(embedUrl).origin); }} /> : <video ref={videoRef} controls autoPlay onLoadedMetadata={(event) => { if (resumePosition > 0) event.currentTarget.currentTime = Math.min(resumePosition, Math.max(0, event.currentTarget.duration - 1)); }} onPause={() => saveProgress(true)} onEnded={() => saveProgress(true)} />}</div> : <div className="modal-visual" style={{ '--hero': `url("${item.backdrop_path || item.poster_path}")` }}>
+      {playing ? <div className="player-wrap">{embedUrl ? <iframe ref={iframeRef} src={embedUrl} title={`Playing ${item.title || item.name}`} width="100%" height="100%" frameBorder="0" allow="autoplay; encrypted-media; fullscreen; picture-in-picture" referrerPolicy="no-referrer" allowFullScreen onLoad={() => { if (resumePosition > 1) iframeRef.current?.contentWindow?.postMessage({ type: 'cashvideo:resume', currentTime: resumePosition }, new URL(embedUrl).origin); }} /> : <video ref={videoRef} controls autoPlay onLoadedMetadata={(event) => { if (resumePosition > 0) event.currentTarget.currentTime = Math.min(resumePosition, Math.max(0, event.currentTarget.duration - 1)); }} onPause={() => { if (!videoRef.current?.ended) saveProgress(true); }} onEnded={() => saveProgress(true, true)} />}</div> : <div className="modal-visual" style={{ '--hero': `url("${item.backdrop_path || item.poster_path}")` }}>
         <button className="play-large" aria-label={`${resumeAvailable ? 'Resume' : 'Play'} ${item.title || item.name}`} disabled={!playable || resolving} onClick={startPlayback}><Play fill="currentColor" /><span>{resolving ? 'Loading…' : resumeAvailable ? 'Resume' : 'Play'}</span></button>
       </div>}
       {!playing && <div className="modal-copy">

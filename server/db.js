@@ -16,6 +16,7 @@ db.exec(`
     role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('admin','user')),
     display_name TEXT NOT NULL,
     age INTEGER CHECK(age IS NULL OR (age >= 1 AND age <= 120)),
+    max_content_rating INTEGER CHECK(max_content_rating IS NULL OR max_content_rating IN (7,13,16,18)),
     avatar TEXT NOT NULL DEFAULT 'violet',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
@@ -53,7 +54,18 @@ db.exec(`
     source_url TEXT NOT NULL,
     PRIMARY KEY(media_id, media_type)
   );
+  CREATE TABLE IF NOT EXISTS content_ratings (
+    media_id INTEGER NOT NULL,
+    media_type TEXT NOT NULL CHECK(media_type IN ('movie','tv')),
+    age_rating INTEGER,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(media_id,media_type)
+  );
 `);
+
+if (!db.prepare("PRAGMA table_info(users)").all().some((column) => column.name === 'max_content_rating')) {
+  db.exec('ALTER TABLE users ADD COLUMN max_content_rating INTEGER CHECK(max_content_rating IS NULL OR max_content_rating IN (7,13,16,18))');
+}
 
 const progressColumns = new Set(db.prepare('PRAGMA table_info(progress)').all().map((column) => column.name));
 if (!progressColumns.has('season')) db.exec('ALTER TABLE progress ADD COLUMN season INTEGER');

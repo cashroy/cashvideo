@@ -6,6 +6,7 @@ CashVideo is a private, self-hosted home cinema for a household. Each person get
 
 - First-run admin setup, household user management, securely hashed 4-digit PINs, login throttling, and 30-day sessions
 - Profile picker on every signed-out visit, per-user PINs, watchlists, history, progress, recommendations, and account deletion
+- Admin-managed age restrictions that filter recommendations, search, title details, and playback for each profile
 - Trending, popular, search, artwork, and recommendations from TMDB using one admin-managed key
 - Built-in Jellyfin playback matched by TMDB ID, plus custom embed templates and direct media overrides
 - Responsive TV-friendly interface with no advertising or third-party player popups
@@ -75,6 +76,8 @@ When both apps share a container network, the URL is commonly `http://jellyfin:8
 
 CashVideo searches Jellyfin by the TMDB ID supplied by its catalogue. For shows it then resolves the selected season and episode. Native playback reports the current timestamp to CashVideo every five seconds, as well as on pause, completion, and player exit. Resume seeks to that timestamp the next time the same profile opens the title.
 
+When a movie finishes, it is removed from Continue Watching. When a TV episode finishes, CashVideo uses TMDB season metadata to queue the next episode at 0 seconds; finishing a season queues episode 1 of the next season. The final episode of the final season is removed instead. Completion updates are idempotent, so a late timestamp event from the episode that just ended cannot replace the queued next episode. The bundled sample catalogue includes equivalent season metadata for offline evaluation.
+
 To start a title at an explicit position, add seconds to the CashVideo page URL, for example `?t=95`. This URL value takes priority over saved progress for that player session; invalid or negative values are ignored.
 
 ### Custom playback templates
@@ -96,7 +99,13 @@ Native MP4, WebM, and HLS sources resume at the user's saved timestamp. TV embed
 - Player to CashVideo when finished: `{ type: "cashvideo:ended" }`
 - CashVideo to player after load: `{ type: "cashvideo:resume", currentTime }`
 
-CashVideo also recognises `vidcore:ended` as a completion event, but providers that do not publish timestamp and seek events cannot support reliable per-user timestamp resume. Starting playback opens a black, viewport-filling watch screen so the catalogue and details page are no longer visible. The browser Back button, Escape key, and in-player back button return to the previous CashVideo screen.
+CashVideo also recognises `vidcore:ended` as a completion event. A custom provider must publish the progress and completion events above for exact resume and automatic next-episode behavior; browser security prevents CashVideo from reading an unrelated cross-origin iframe directly. Starting playback opens a black, viewport-filling watch screen so the catalogue and details page are no longer visible. The browser Back button, Escape key, and in-player back button return to the previous CashVideo screen.
+
+Each profile can remove an item from **Continue Watching** with the × button on its card. This clears only that profile's saved position for that title; other household profiles are not changed.
+
+### Profile age restrictions
+
+Administrators can open **Admin > Household users** and set each profile to unrestricted or a maximum content age of 7, 13, 16, or 18. The limit is enforced by the server across home rails, recommendations, search, title details, watchlist/progress writes, and playback—not only hidden in the interface. CashVideo derives classifications from TMDB release certifications for movies and content ratings for TV shows. Titles without a usable classification are hidden from restricted profiles as a safety default.
 
 For a fully local setup, serve a read-only media dataset with a media server or reverse proxy and link its URLs. Do not expose the underlying dataset with write access.
 

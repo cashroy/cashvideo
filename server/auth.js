@@ -40,7 +40,7 @@ export function auth(req, res, next) {
   const token = parseCookies(req.headers.cookie).cashvideo_session;
   if (!token) return res.status(401).json({ error: 'Please sign in.' });
   const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-  const user = db.prepare(`SELECT u.id,u.username,u.role,u.display_name,u.age,u.avatar,u.created_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>CURRENT_TIMESTAMP`).get(tokenHash);
+  const user = db.prepare(`SELECT u.id,u.username,u.role,u.display_name,u.age,u.max_content_rating,u.avatar,u.created_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>CURRENT_TIMESTAMP`).get(tokenHash);
   if (!user) return res.status(401).json({ error: 'Your session has expired.' });
   req.user = user;
   next();
