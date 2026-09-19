@@ -8,13 +8,15 @@ export function Spinner() { return <div className="spinner" aria-label="Loading"
 
 export function MediaCard({ item, onOpen, inList = false, onListChange, onRemove, progress }) {
   const title = item.title || item.name;
-  const percent = progress ?? (item.duration ? Math.min(100, (item.position / item.duration) * 100) : 0);
+  const storedDuration = Number(item.duration) || 0;
+  const storedPosition = Number(item.position) || 0;
+  const percent = Math.max(0, Math.min(100, Number(progress ?? (storedDuration ? (storedPosition / storedDuration) * 100 : 0)) || 0));
   return (
     <article className="media-card" onClick={() => onOpen(item)} tabIndex="0" onKeyDown={(event) => event.key === 'Enter' && onOpen(item)}>
       <div className="poster-wrap">
         {item.poster_path ? <img src={item.poster_path} alt="" loading="lazy" /> : <div className="poster-fallback">CV</div>}
         <div className="card-overlay"><button className="round" aria-label={`Open ${title}`}><Play fill="currentColor" size={18} /></button></div>
-        {percent > 0 && <div className="progress-track"><i style={{ width: `${percent}%` }} /></div>}
+        {percent > 0 && <div className="progress-track" role="progressbar" aria-label={`${title} watched`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(percent)}><i style={{ width: `${percent}%` }} /></div>}
       </div>
       <div className="card-meta">
         <div><strong>{title}</strong><span>{item.media_type === 'tv' && item.season ? `S${item.season} E${item.episode}` : `${(item.date || item.release_date || item.first_air_date || '').slice(0, 4)} · ${item.media_type === 'tv' ? 'Series' : 'Movie'}`}</span></div>
@@ -65,6 +67,8 @@ export function DetailsModal({ item: initial, onClose, onListChange, inList, onS
   const pushedHistoryRef = useRef(false);
   const lastSavedRef = useRef(-1);
   const finishedRef = useRef(false);
+  const persistOnExitRef = useRef(() => {});
+  const exitSavedRef = useRef(false);
   onCloseRef.current = onClose;
   useEffect(() => {
     api(`/api/media/${initial.media_type}/${initial.id || initial.media_id}`).then(({ item: full }) => {
@@ -80,14 +84,14 @@ export function DetailsModal({ item: initial, onClose, onListChange, inList, onS
       window.history.pushState({ ...window.history.state, cashvideoPlayer: true }, '');
       pushedHistoryRef.current = true;
     }
-    const handlePopState = () => { pushedHistoryRef.current = false; onCloseRef.current(); };
+    const handlePopState = () => { persistOnExitRef.current(); pushedHistoryRef.current = false; onCloseRef.current(); };
     const handleKeyDown = (event) => {
       if (event.key !== 'Escape') return;
-      if (pushedHistoryRef.current) window.history.back(); else onCloseRef.current();
+      if (pushedHistoryRef.current) window.history.back(); else { persistOnExitRef.current(); onCloseRef.current(); }
     };
     window.addEventListener('popstate', handlePopState);
     window.addEventListener('keydown', handleKeyDown);
-    return () => { document.body.style.overflow = previousOverflow; window.removeEventListener('popstate', handlePopState); window.removeEventListener('keydown', handleKeyDown); };
+    return () => { persistOnExitRef.current(); document.body.style.overflow = previousOverflow; window.removeEventListener('popstate', handlePopState); window.removeEventListener('keydown', handleKeyDown); };
   }, []);
   useEffect(() => {
     if (!playing || !item.source_url || !videoRef.current) return;
@@ -96,13 +100,13 @@ export function DetailsModal({ item: initial, onClose, onListChange, inList, onS
     if ((item.source_type === 'hls' || item.source_url.includes('.m3u8')) && Hls.isSupported()) { hls = new Hls(); hls.loadSource(item.source_url); hls.attachMedia(video); } else video.src = item.source_url;
     return () => hls?.destroy();
   }, [playing, item.source_type, item.source_url]);
+  useEffect(() => { if (playing) exitSavedRef.current = false; }, [playing]);
   const templateUrl = item.source_url ? null : resolvePlaybackTemplate(item.playback_template, item, season, episode);
   const requestedPosition = parseResumeTimestamp(window.location.search);
   const resumePosition = requestedPosition ?? (Number(item.progress?.position ?? initial.position) || 0);
   const embedUrl = addEmbedPlaybackParams(templateUrl, resumePosition);
   const jellyfinReady = item.playback_provider === 'jellyfin' && item.jellyfin_configured;
   const playable = Boolean(item.source_url || embedUrl || jellyfinReady);
-  const requestClose = () => { if (pushedHistoryRef.current) window.history.back(); else onCloseRef.current(); };
   const saveEmbeddedProgress = useCallback((updates = {}) => {
     if (finishedRef.current && updates.completed !== true) return;
     if (updates.completed === true) finishedRef.current = true;
@@ -140,6 +144,16 @@ export function DetailsModal({ item: initial, onClose, onListChange, inList, onS
     const timer = window.setInterval(() => saveProgress(true), 5_000);
     return () => { window.clearInterval(timer); saveProgress(true); };
   }, [embedUrl, item.source_url, playing, saveProgress]);
+  const persistPlaybackProgress = useCallback(() => {
+    if (!playing || exitSavedRef.current) return;
+    exitSavedRef.current = true;
+    if (embedUrl) saveEmbeddedProgress(); else saveProgress(true);
+  }, [embedUrl, playing, saveEmbeddedProgress, saveProgress]);
+  persistOnExitRef.current = persistPlaybackProgress;
+  const requestClose = () => {
+    persistPlaybackProgress();
+    if (pushedHistoryRef.current) window.history.back(); else onCloseRef.current();
+  };
   const startPlayback = async () => {
     setPlayerError('');
     if (item.source_url || embedUrl) return setPlaying(true);
