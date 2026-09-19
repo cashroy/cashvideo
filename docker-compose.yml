@@ -1,0 +1,15 @@
+services:
+  cashvideo:
+    build: .
+    container_name: cashvideo
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/data
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATA_DIR=/data
+      # LAN deployments commonly use HTTP. Set true only behind HTTPS.
+      - COOKIE_SECURE=false
